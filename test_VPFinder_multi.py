@@ -55,7 +55,6 @@ class MultiClassDataset(Dataset):
         return self.labels
 
     def get_batch_labels(self, idx):
-        print(self.labels[idx])
         return np.array(self.labels[idx])
 
     def get_batch_texts(self, idx):
@@ -167,39 +166,26 @@ class MultiClassifier(nn.Module):
 
         label_info_second = mapped_label_info_second.squeeze(dim=1)  # [4, 64]  cuda:0
 
-        label_info_second = label_info_second.unsqueeze(0)  # [1, 8, 64]
-        label_info_second = label_info_second.repeat(hidden_output.shape[0], 1, 1)
-        second_layer_output = nn.functional.cosine_similarity(hidden_output, label_info_second, dim=2)  # [20, 4]
-
-        output = torch.cat((first_layer_output, second_layer_output), dim=1)  # [20, 12]
-
-        flag = []
-        for vector in output:
+        auth = []
+        for vector in first_layer_output:
             tag = True
             if vector[0] > 0.0:
-                if vector[8] > vector[0] or vector[9] > vector[0] or vector[10] > vector[0] or vector[11] > vector[0]:
-                    tag = False
-            flag.append(tag)
+                tag = False
+            auth.append(tag)
 
-        pred = argmax_custom(output, flag)
+        output = torch.full((len(input_id), 12), -2, dtype=torch.float32).cuda()  # [20, 12]
+        i = 0
+        preds = torch.zeros(len(input_id)).cuda()
+        for row, tag in zip(hidden_output, auth):  # [1, 64]                     label_info [4, 64]
+            if tag:
+                output[i] = first_layer_output[i]
+            else:
+                result = nn.functional.cosine_similarity(row, label_info_second, dim=1)
+                output[i] = torch.cat((first_layer_output[i], result), dim=0)
+            preds[i] = torch.argmax(output[i])
+            i += 1
 
-        return output, pred
-
-def argmax_custom(input, flag):
-    # if True, second layer ok
-    argmax_indices = []
-    for row, tag in zip(input, flag):
-        max_index = 0
-        max_value = row[0]
-        for i, value in enumerate(row[1:], start=1):
-            if value > max_value:
-                max_value = value
-                max_index = i
-            if tag and i == 7:
-                break
-        argmax_indices.append(max_index)
-    argmax_indices = torch.tensor(argmax_indices, dtype=torch.int64).cuda()
-    return argmax_indices   # [20]
+        return output, preds
 
 
 # Train Multi-Class Classification Model
@@ -266,8 +252,6 @@ def train_multi_model(model, val_data):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    for pred, label in zip(all_preds, all_labels):
-        print(pred, label)
     precision = precision_score(all_labels, all_preds, average='weighted')
     recall = recall_score(all_labels, all_preds, average='weighted')
     f1 = f1_score(all_labels, all_preds, average='weighted')
